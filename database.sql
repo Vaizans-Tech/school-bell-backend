@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS sounds (
 );
 
 -- Announcements (user-isolated)
+-- type='recorded': audio uploaded by controller, plays immediately (is_active=1)
+-- type='scheduled': set scheduled_at TIME (HH:MM), cron activates at that time (is_active=0→1)
 CREATE TABLE IF NOT EXISTS announcements (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   user_id      INT NOT NULL,
@@ -61,7 +63,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   audio_url    VARCHAR(500),
   priority     INT DEFAULT 0,
   is_active    TINYINT DEFAULT 1,
-  scheduled_at DATETIME DEFAULT NULL,
+  scheduled_at TIME DEFAULT NULL,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
