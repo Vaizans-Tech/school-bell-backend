@@ -8,7 +8,9 @@ const options = {
       version: '1.0.0',
       description: 'REST API for School Bell Android App & Admin Panel',
     },
-    servers: [{ url: 'http://localhost:8080', description: 'Local Server' }],
+    servers: [
+      { url: 'https://api.shikkhasomoy.com', description: 'Production Server' },
+    ],
     components: {
       securitySchemes: {
         bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },

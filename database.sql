@@ -1,5 +1,5 @@
-CREATE DATABASE IF NOT EXISTS school_bell CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE school_bell;
+CREATE DATABASE IF NOT EXISTS shikkhasomoy_schoolbell CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE shikkhasomoy_schoolbell;
 
 -- Users (admin + regular users)
 CREATE TABLE IF NOT EXISTS users (
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS announcements (
   user_id      INT NOT NULL,
   type         ENUM('recorded','scheduled') DEFAULT 'recorded',
   title        VARCHAR(300) NOT NULL,
-  message      TEXT DEFAULT '',
+  message      TEXT,
   audio_url    VARCHAR(500),
   priority     INT DEFAULT 0,
   is_active    TINYINT DEFAULT 1,
