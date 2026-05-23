@@ -82,13 +82,48 @@ const options = {
             last_seen:        { type: 'string', format: 'date-time' },
           },
         },
+        SoundFile: {
+          type: 'object',
+          properties: {
+            id:         { type: 'integer' },
+            name:       { type: 'string', example: 'Morning Bell' },
+            filename:   { type: 'string', example: '1779286988946_bell.mp3' },
+            url:        { type: 'string', example: 'https://api.shikkhasomoy.com/uploads/1779286988946_bell.mp3' },
+            size_bytes: { type: 'integer' },
+            type:       { type: 'string', enum: ['bell', 'azan'] },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        SoundVersion: {
+          type: 'object',
+          properties: {
+            type:    { type: 'string', enum: ['bell', 'azan'] },
+            version: { type: 'integer', description: 'Max sound id — changes when library updates' },
+            files: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name:       { type: 'string' },
+                  url:        { type: 'string' },
+                  checksum:   { type: 'string' },
+                  size_bytes: { type: 'integer' },
+                  type:       { type: 'string', enum: ['bell', 'azan'] },
+                },
+              },
+            },
+          },
+        },
       },
     },
     tags: [
       { name: 'Auth',          description: 'Login for device & admin' },
       { name: 'Device',        description: 'Device heartbeat' },
       { name: 'Schedules',     description: 'Bell schedule management' },
-      { name: 'Sounds',        description: 'Sound file management' },
+      { name: 'Bell Sounds',   description: 'School bell / alarm audio (type=bell)' },
+      { name: 'Azan Sounds',   description: 'Prayer (azan) audio files (type=azan)' },
+      { name: 'Sounds',        description: 'Legacy endpoints — use type=bell|azan query' },
+      { name: 'Azan Times',    description: 'Prayer schedule times per user' },
       { name: 'Announcements', description: 'Announcement management' },
       { name: 'Admin',         description: 'Admin dashboard & user management' },
     ],
@@ -148,29 +183,166 @@ const options = {
           responses: { 200: { description: 'Deleted' } },
         },
       },
-      // ── Sounds ──────────────────────────────────────────────────────────────
+      // ── Bell sounds (alarms) ────────────────────────────────────────────────
+      '/api/sounds/bell': {
+        get: {
+          tags: ['Bell Sounds'],
+          summary: 'List bell / alarm audio files',
+          description: 'Returns sounds where type=bell. Admin sees all bell files; users see admin uploads + their own.',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Bell sound list',
+              content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/SoundFile' } } } },
+            },
+          },
+        },
+      },
+      '/api/sounds/bell/version': {
+        get: {
+          tags: ['Bell Sounds'],
+          summary: 'Bell library version + files (device sync)',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Bell version payload',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/SoundVersion' } } },
+            },
+          },
+        },
+      },
+      '/api/sounds/bell/upload': {
+        post: {
+          tags: ['Bell Sounds'],
+          summary: 'Upload bell / alarm audio',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'multipart/form-data': {
+                schema: {
+                  type: 'object',
+                  required: ['sound'],
+                  properties: { sound: { type: 'string', format: 'binary', description: '.mp3, .wav, or .ogg' } },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Bell sound uploaded (type=bell)' } },
+        },
+      },
+      // ── Azan sounds (prayer audio) ────────────────────────────────────────────
+      '/api/sounds/azan': {
+        get: {
+          tags: ['Azan Sounds'],
+          summary: 'List azan audio files',
+          description: 'Returns sounds where type=azan. Used with /api/azan prayer times (sound_file references filename).',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Azan sound list',
+              content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/SoundFile' } } } },
+            },
+          },
+        },
+      },
+      '/api/sounds/azan/version': {
+        get: {
+          tags: ['Azan Sounds'],
+          summary: 'Azan library version + files (device sync)',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Azan version payload',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/SoundVersion' } } },
+            },
+          },
+        },
+      },
+      '/api/sounds/azan/upload': {
+        post: {
+          tags: ['Azan Sounds'],
+          summary: 'Upload azan audio',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'multipart/form-data': {
+                schema: {
+                  type: 'object',
+                  required: ['sound'],
+                  properties: { sound: { type: 'string', format: 'binary', description: '.mp3, .wav, or .ogg' } },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Azan sound uploaded (type=azan)' } },
+        },
+      },
+      // ── Sounds (legacy / generic) ─────────────────────────────────────────────
       '/api/sounds/version': {
         get: {
-          tags: ['Sounds'], summary: 'Get sound version + file list (device)', security: [{ bearerAuth: [] }],
-          responses: { 200: { description: 'Sound version and files' } },
+          tags: ['Sounds'],
+          summary: 'Sound version + files (device) — requires type query',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'type', in: 'query', required: true, schema: { type: 'string', enum: ['bell', 'azan'] }, description: 'Defaults to bell if omitted on legacy clients' }],
+          responses: { 200: { description: 'Version payload', content: { 'application/json': { schema: { $ref: '#/components/schemas/SoundVersion' } } } } },
         },
       },
       '/api/sounds': {
         get: {
-          tags: ['Sounds'], summary: 'Get all sounds (admin)', security: [{ bearerAuth: [] }],
-          responses: { 200: { description: 'List of sounds' } },
+          tags: ['Sounds'],
+          summary: 'List sounds by type (query)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'type', in: 'query', required: true, schema: { type: 'string', enum: ['bell', 'azan'] } }],
+          responses: {
+            200: {
+              description: 'Filtered sound list',
+              content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/SoundFile' } } } },
+            },
+          },
         },
       },
       '/api/sounds/upload': {
         post: {
-          tags: ['Sounds'], summary: 'Upload sound file (admin)', security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', properties: { sound: { type: 'string', format: 'binary' } } } } } },
+          tags: ['Sounds'],
+          summary: 'Upload sound (body/query type=bell|azan)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'type', in: 'query', schema: { type: 'string', enum: ['bell', 'azan'], default: 'bell' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'multipart/form-data': {
+                schema: {
+                  type: 'object',
+                  required: ['sound'],
+                  properties: {
+                    sound: { type: 'string', format: 'binary' },
+                    type:  { type: 'string', enum: ['bell', 'azan'], default: 'bell' },
+                  },
+                },
+              },
+            },
+          },
           responses: { 200: { description: 'Uploaded' } },
         },
       },
       '/api/sounds/{id}': {
+        put: {
+          tags: ['Bell Sounds', 'Azan Sounds'],
+          summary: 'Rename sound (admin)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } } },
+          },
+          responses: { 200: { description: 'Updated' } },
+        },
         delete: {
-          tags: ['Sounds'], summary: 'Delete sound (admin)', security: [{ bearerAuth: [] }],
+          tags: ['Bell Sounds', 'Azan Sounds'],
+          summary: 'Delete sound (admin)',
+          security: [{ bearerAuth: [] }],
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: { 200: { description: 'Deleted' } },
         },
