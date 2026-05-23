@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../db');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { uploadsBaseUrl } = require('../lib/publicUrl');
 
 const SOUND_TYPES = ['bell', 'azan'];
 const uploadsDir = path.join(__dirname, '..', '..', process.env.UPLOAD_DIR || 'uploads');
@@ -24,10 +25,6 @@ const upload = multer({
 function parseType(value, fallback = null) {
   const type = (value || fallback || '').toLowerCase();
   return SOUND_TYPES.includes(type) ? type : null;
-}
-
-function uploadsBaseUrl(req) {
-  return `${req.protocol}://${req.get('host')}/uploads/`;
 }
 
 function mapSoundRows(rows, baseUrl) {

@@ -3,6 +3,15 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { adminMiddleware } = require('../middleware/auth');
 
+const ALLOWED_ROLES = ['admin', 'user'];
+
+function normalizeRole(role) {
+  if (!role || role === 'user') return 'user';
+  if (role === 'admin') return 'admin';
+  if (role === 'device') return 'user';
+  return null;
+}
+
 // GET all devices
 router.get('/devices', adminMiddleware, async (req, res) => {
   try {
@@ -54,11 +63,15 @@ router.get('/users', adminMiddleware, async (req, res) => {
 router.post('/users', adminMiddleware, async (req, res) => {
   const { username, password, role } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  const normalizedRole = normalizeRole(role);
+  if (role && !normalizedRole) {
+    return res.status(400).json({ error: 'role must be admin or user' });
+  }
   try {
     const hash = await bcrypt.hash(password, 10);
     const [result] = await db.query(
       "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-      [username, hash, role || 'user']
+      [username, hash, normalizedRole]
     );
     res.json({ id: result.insertId, message: 'User created' });
   } catch (err) {
@@ -70,12 +83,21 @@ router.post('/users', adminMiddleware, async (req, res) => {
 // PUT update user
 router.put('/users/:id', adminMiddleware, async (req, res) => {
   const { role, password } = req.body;
+  if (role !== undefined) {
+    const normalizedRole = normalizeRole(role);
+    if (!normalizedRole) return res.status(400).json({ error: 'role must be admin or user' });
+  }
   try {
+    const normalizedRole = role !== undefined ? normalizeRole(role) : undefined;
     if (password) {
       const hash = await bcrypt.hash(password, 10);
-      await db.query('UPDATE users SET role=?, password_hash=? WHERE id=?', [role, hash, req.params.id]);
-    } else {
-      await db.query('UPDATE users SET role=? WHERE id=?', [role, req.params.id]);
+      if (normalizedRole !== undefined) {
+        await db.query('UPDATE users SET role=?, password_hash=? WHERE id=?', [normalizedRole, hash, req.params.id]);
+      } else {
+        await db.query('UPDATE users SET password_hash=? WHERE id=?', [hash, req.params.id]);
+      }
+    } else if (normalizedRole !== undefined) {
+      await db.query('UPDATE users SET role=? WHERE id=?', [normalizedRole, req.params.id]);
     }
     res.json({ message: 'User updated' });
   } catch (err) {

@@ -1,0 +1,38 @@
+[4:34 pm, 19/05/2026] Edukit: https://server2.shikkhasomoy.com:2087/
+[4:34 pm, 19/05/2026] Edukit: User: root
+[4:34 pm, 19/05/2026] Edukit: Pass: siraj1757@2026
+
+ssh root@194.233.86.3
+
+Temporary:
+shikkhasomoy.com → frontend test
+api.shikkhasomoy.com → backend test
+
+PORT=8080
+HOST=0.0.0.0
+
+JWT_SECRET=schoolbell_super_secret_8f7sd9f7s9df
+
+DB_HOST=localhost
+DB_USER=shikkhasomoy_schoolbell
+DB_PASSWORD=Bell@edu6
+DB_NAME=shikkhasomoy_schoolbell
+
+UPLOAD_DIR=uploads
+
+cd /home/shikkhasomoy/schoolbell/backend
+nano .env
+
+
+Production backend is now fully deployed and running successfully.
+
+Base API URL:
+https://api.shikkhasomoy.com
+
+Swagger Docs:
+https://api.shikkhasomoy.com/api-docs
+
+WebSocket URL:
+wss://api.shikkhasomoy.com/ws/announce
+
+Please update all frontend/mobile app API configurations from localhost/IP to this production base URL.

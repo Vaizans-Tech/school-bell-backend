@@ -23,7 +23,21 @@ CREATE TABLE IF NOT EXISTS devices (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
--- Bell Schedules (user-isolated)
+-- Default bell schedules (admin-managed templates — app users import via API)
+CREATE TABLE IF NOT EXISTS bell_schedule_templates (
+  id           INT AUTO_INCREMENT PRIMARY KEY,
+  label        VARCHAR(200) NOT NULL,
+  hour         INT NOT NULL,
+  minute       INT NOT NULL,
+  days         INT DEFAULT 62,
+  sound_file   VARCHAR(200) DEFAULT 'default_bell.mp3',
+  is_enabled   TINYINT DEFAULT 1,
+  routine_type VARCHAR(50) DEFAULT 'SCHOOL',
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Bell Schedules (user-isolated — copied from templates or created in app)
 CREATE TABLE IF NOT EXISTS schedules (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   user_id      INT NOT NULL,

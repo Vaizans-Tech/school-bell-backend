@@ -2,6 +2,19 @@ const router = require('express').Router();
 const db = require('../db');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 
+function mapTemplate(r) {
+  return {
+    id: r.id,
+    label: r.label,
+    hour: r.hour,
+    minute: r.minute,
+    days: r.days,
+    sound_file: r.sound_file,
+    is_enabled: !!r.is_enabled,
+    routine_type: r.routine_type,
+  };
+}
+
 // GET /api/schedules/version — lightweight change-detection: returns count + max updated_at
 // User App polls this every minute to decide if a full refresh is needed
 router.get('/version', authMiddleware, async (req, res) => {
@@ -50,6 +63,87 @@ router.get('/all', authMiddleware, async (req, res) => {
       days: r.days, sound_file: r.sound_file, is_enabled: !!r.is_enabled,
       routine_type: r.routine_type
     })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Default bell schedule templates (admin CRUD, app users read / import) ─────
+
+router.get('/templates', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM bell_schedule_templates ORDER BY hour, minute'
+    );
+    res.json(rows.map(mapTemplate));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/templates', adminMiddleware, async (req, res) => {
+  const { label, hour, minute, days, sound_file, is_enabled, routine_type } = req.body;
+  if (!label || hour == null || minute == null) {
+    return res.status(400).json({ error: 'label, hour, minute required' });
+  }
+  try {
+    const [result] = await db.query(
+      `INSERT INTO bell_schedule_templates (label, hour, minute, days, sound_file, is_enabled, routine_type)
+       VALUES (?,?,?,?,?,?,?)`,
+      [label, hour, minute, days ?? 62, sound_file || 'default_bell.mp3', is_enabled ?? 1, routine_type || 'SCHOOL']
+    );
+    res.json({ id: result.insertId, message: 'Template created' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/templates/:id', adminMiddleware, async (req, res) => {
+  const { label, hour, minute, days, sound_file, is_enabled, routine_type } = req.body;
+  try {
+    await db.query(
+      `UPDATE bell_schedule_templates
+       SET label=?, hour=?, minute=?, days=?, sound_file=?, is_enabled=?, routine_type=?
+       WHERE id=?`,
+      [label, hour, minute, days, sound_file, is_enabled ? 1 : 0, routine_type, req.params.id]
+    );
+    res.json({ message: 'Template updated' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/templates/:id', adminMiddleware, async (req, res) => {
+  try {
+    await db.query('DELETE FROM bell_schedule_templates WHERE id=?', [req.params.id]);
+    res.json({ message: 'Template deleted' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Copy enabled templates into the logged-in user's schedules (mobile app)
+router.post('/import-templates', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const [templates] = await db.query(
+      'SELECT * FROM bell_schedule_templates WHERE is_enabled = 1 ORDER BY hour, minute'
+    );
+    let imported = 0;
+    for (const t of templates) {
+      const [existing] = await db.query(
+        'SELECT id FROM schedules WHERE user_id=? AND label=? AND hour=? AND minute=?',
+        [userId, t.label, t.hour, t.minute]
+      );
+      if (existing.length) continue;
+      await db.query(
+        `INSERT INTO schedules (user_id, label, hour, minute, days, sound_file, is_enabled, routine_type)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [userId, t.label, t.hour, t.minute, t.days, t.sound_file, t.is_enabled, t.routine_type]
+      );
+      imported++;
+    }
+    res.json({ message: `${imported} schedule(s) imported`, imported, total: templates.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

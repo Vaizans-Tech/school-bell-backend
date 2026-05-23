@@ -14,6 +14,8 @@ const db = require('./db');
 const app = express();
 const server = http.createServer(app);
 
+app.set('trust proxy', 1);
+
 // ── Uploads dir ───────────────────────────────────────────────────────────────
 const uploadsDir = path.join(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });

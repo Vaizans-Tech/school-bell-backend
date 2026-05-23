@@ -40,12 +40,24 @@ const options = {
         },
         Heartbeat: {
           type: 'object',
+          required: ['device_id'],
           properties: {
             device_id:        { type: 'string' },
             battery_level:    { type: 'integer', example: 85 },
             battery_charging: { type: 'boolean' },
-            school_name:      { type: 'string' },
-            status:           { type: 'string', example: 'online' },
+          },
+        },
+        ScheduleTemplate: {
+          type: 'object',
+          properties: {
+            id:           { type: 'integer' },
+            label:        { type: 'string', example: 'Morning Bell' },
+            hour:         { type: 'integer', example: 8 },
+            minute:       { type: 'integer', example: 0 },
+            days:         { type: 'integer', example: 62 },
+            sound_file:   { type: 'string', example: 'default_bell.mp3' },
+            is_enabled:   { type: 'boolean' },
+            routine_type: { type: 'string', example: 'SCHOOL' },
           },
         },
         Announcement: {
@@ -65,8 +77,7 @@ const options = {
           properties: {
             id:          { type: 'integer' },
             username:    { type: 'string' },
-            school_name: { type: 'string' },
-            role:        { type: 'string', enum: ['admin', 'device'] },
+            role:        { type: 'string', enum: ['admin', 'user'] },
             created_at:  { type: 'string', format: 'date-time' },
           },
         },
@@ -75,11 +86,12 @@ const options = {
           properties: {
             id:               { type: 'integer' },
             device_id:        { type: 'string' },
-            school_name:      { type: 'string' },
+            user_id:          { type: 'integer', nullable: true },
+            username:         { type: 'string', nullable: true },
             battery_level:    { type: 'integer' },
             battery_charging: { type: 'boolean' },
             status:           { type: 'string', enum: ['online', 'offline'] },
-            last_seen:        { type: 'string', format: 'date-time' },
+            last_seen:        { type: 'string', format: 'date-time', nullable: true },
           },
         },
         SoundFile: {
@@ -119,7 +131,8 @@ const options = {
     tags: [
       { name: 'Auth',          description: 'Login for device & admin' },
       { name: 'Device',        description: 'Device heartbeat' },
-      { name: 'Schedules',     description: 'Bell schedule management' },
+      { name: 'Schedules',     description: 'Per-user bell schedules + default templates gallery' },
+      { name: 'Schedule Templates', description: 'Admin default schedules — users import via /import-templates' },
       { name: 'Bell Sounds',   description: 'School bell / alarm audio (type=bell)' },
       { name: 'Azan Sounds',   description: 'Prayer (azan) audio files (type=azan)' },
       { name: 'Sounds',        description: 'Legacy endpoints — use type=bell|azan query' },
@@ -134,7 +147,7 @@ const options = {
           tags: ['Auth'], summary: 'Device login',
           requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/LoginRequest' } } } },
           responses: {
-            200: { description: 'JWT token', content: { 'application/json': { schema: { type: 'object', properties: { token: { type: 'string' }, school_name: { type: 'string' } } } } } },
+            200: { description: 'JWT token', content: { 'application/json': { schema: { type: 'object', properties: { token: { type: 'string' }, username: { type: 'string' }, message: { type: 'string' } } } } } },
             401: { description: 'Invalid credentials' },
           },
         },
@@ -163,11 +176,115 @@ const options = {
           tags: ['Schedules'], summary: 'Get enabled schedules (device)', security: [{ bearerAuth: [] }],
           responses: { 200: { description: 'List of schedules', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Schedule' } } } } } },
         },
+        post: {
+          tags: ['Schedules'],
+          summary: 'Create schedule for logged-in user',
+          security: [{ bearerAuth: [] }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/Schedule' } } } },
+          responses: { 200: { description: 'Created' } },
+        },
       },
       '/api/schedules/all': {
         get: {
-          tags: ['Schedules'], summary: 'Get all schedules including disabled (admin)', security: [{ bearerAuth: [] }],
-          responses: { 200: { description: 'All schedules' } },
+          tags: ['Schedules'], summary: 'Get all schedules for logged-in user (includes disabled)', security: [{ bearerAuth: [] }],
+          responses: { 200: { description: 'All schedules', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Schedule' } } } } } },
+        },
+      },
+      '/api/schedules/version': {
+        get: {
+          tags: ['Schedules'], summary: 'Schedule change-detection token (device poll)', security: [{ bearerAuth: [] }],
+          responses: { 200: { description: '{ version: "count_timestamp" }' } },
+        },
+      },
+      '/api/schedules/templates': {
+        get: {
+          tags: ['Schedule Templates'],
+          summary: 'List default bell schedule templates (gallery)',
+          description: 'Admin-managed defaults. Any authenticated user can read. Mobile app uses this before import.',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Template list',
+              content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/ScheduleTemplate' } } } },
+            },
+          },
+        },
+        post: {
+          tags: ['Schedule Templates'],
+          summary: 'Create schedule template (admin)',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['label', 'hour', 'minute'],
+                  properties: {
+                    label: { type: 'string' },
+                    hour: { type: 'integer' },
+                    minute: { type: 'integer' },
+                    days: { type: 'integer', default: 62 },
+                    sound_file: { type: 'string', default: 'default_bell.mp3' },
+                    is_enabled: { type: 'boolean', default: true },
+                    routine_type: { type: 'string', default: 'SCHOOL' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Created' } },
+        },
+      },
+      '/api/schedules/templates/{id}': {
+        put: {
+          tags: ['Schedule Templates'],
+          summary: 'Update schedule template (admin)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ScheduleTemplate' } } } },
+          responses: { 200: { description: 'Updated' } },
+        },
+        delete: {
+          tags: ['Schedule Templates'],
+          summary: 'Delete schedule template (admin)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: { 200: { description: 'Deleted' } },
+        },
+      },
+      '/api/schedules/import-templates': {
+        post: {
+          tags: ['Schedule Templates', 'Schedules'],
+          summary: 'Copy enabled templates into user schedules',
+          description: 'Skips duplicates (same user_id + label + hour + minute). Returns imported count.',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'Import result',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      message: { type: 'string' },
+                      imported: { type: 'integer' },
+                      total: { type: 'integer' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/schedules/admin/all': {
+        get: {
+          tags: ['Schedules', 'Admin'],
+          summary: 'All user schedules (admin)',
+          security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'user_id', in: 'query', schema: { type: 'integer' } }],
+          responses: { 200: { description: 'Schedules with username' } },
         },
       },
       '/api/schedules/{id}': {
@@ -393,7 +510,22 @@ const options = {
         },
         post: {
           tags: ['Admin'], summary: 'Create user', security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { username: { type: 'string' }, password: { type: 'string' }, school_name: { type: 'string' }, role: { type: 'string', enum: ['admin', 'device'] } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['username', 'password'],
+                  properties: {
+                    username: { type: 'string' },
+                    password: { type: 'string' },
+                    role: { type: 'string', enum: ['admin', 'user'], default: 'user', description: 'Legacy "device" is stored as user' },
+                  },
+                },
+              },
+            },
+          },
           responses: { 200: { description: 'Created' } },
         },
       },
@@ -401,7 +533,20 @@ const options = {
         put: {
           tags: ['Admin'], summary: 'Update user', security: [{ bearerAuth: [] }],
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { school_name: { type: 'string' }, role: { type: 'string' }, password: { type: 'string' } } } } } },
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    role: { type: 'string', enum: ['admin', 'user'] },
+                    password: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
           responses: { 200: { description: 'Updated' } },
         },
         delete: {

@@ -4,6 +4,7 @@ const fs = require('fs');
 const multer = require('multer');
 const db = require('../db');
 const { authMiddleware } = require('../middleware/auth');
+const { getPublicBaseUrl } = require('../lib/publicUrl');
 
 // ── Multer setup ─────────────────────────────────────────────────────────────
 const uploadsDir = path.join(__dirname, '..', '..', process.env.UPLOAD_DIR || 'uploads');
@@ -43,7 +44,7 @@ router.get('/', authMiddleware, async (req, res) => {
        ORDER BY created_at DESC LIMIT ?`,
       [req.user.id, limit]
     );
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const baseUrl = getPublicBaseUrl(req);
     res.json(rows.map(r => ({
       ...r,
       audio_url: r.audio_url
@@ -66,7 +67,7 @@ router.get('/latest', authMiddleware, async (req, res) => {
     );
     if (!rows.length) return res.json(null);
     const r = rows[0];
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const baseUrl = getPublicBaseUrl(req);
     res.json({
       ...r,
       audio_url: r.audio_url
@@ -104,7 +105,7 @@ router.post('/recorded', authMiddleware, upload.single('audio'), async (req, res
        VALUES (?, 'recorded', ?, ?, ?, 1)`,
       [req.user.id, title, message || '', audioUrl]
     );
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const baseUrl = getPublicBaseUrl(req);
     res.json({
       id: result.insertId,
       title,
