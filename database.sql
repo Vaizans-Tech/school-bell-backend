@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS announcements (
   priority     INT DEFAULT 0,
   is_active    TINYINT DEFAULT 1,
   scheduled_at TIME DEFAULT NULL,
+  hour         TINYINT DEFAULT NULL,
+  minute       TINYINT DEFAULT NULL,
+  days         INT DEFAULT 62,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

@@ -104,30 +104,36 @@ wss.on('connection', (ws, req) => {
   }
 });
 
+const { isDayEnabled } = require('./lib/announcementHelpers');
+
 // ── Cron — Activate scheduled announcements every minute ─────────────────────
 cron.schedule('* * * * *', async () => {
   const now = new Date();
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
-  const timeStr = `${hh}:${mm}`;
+  const hh = now.getHours();
+  const mm = now.getMinutes();
+  const timeStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   try {
     const [rows] = await db.query(
       `SELECT * FROM announcements
        WHERE type = 'scheduled' AND is_active = 0
-       AND TIME_FORMAT(scheduled_at, '%H:%i') = ?`,
-      [timeStr]
+       AND (
+         (hour = ? AND minute = ?)
+         OR (hour IS NULL AND scheduled_at IS NOT NULL AND TIME_FORMAT(scheduled_at, '%H:%i') = ?)
+       )`,
+      [hh, mm, timeStr]
     );
     if (rows.length === 0) return;
 
-    // Activate them
-    const ids = rows.map(r => r.id);
+    const due = rows.filter(r => isDayEnabled(r.days, now));
+    if (due.length === 0) return;
+
+    const ids = due.map(r => r.id);
     await db.query(
       `UPDATE announcements SET is_active = 1 WHERE id IN (${ids.map(() => '?').join(',')})`,
       ids
     );
 
-    // Notify any live-connected user WebSockets
-    rows.forEach(row => {
+    due.forEach(row => {
       const userReceivers = receivers.get(row.user_id);
       if (userReceivers) {
         const msg = JSON.stringify({ type: 'new_announcement', id: row.id, title: row.title });

@@ -63,13 +63,18 @@ const options = {
         Announcement: {
           type: 'object',
           properties: {
-            id:         { type: 'integer' },
-            title:      { type: 'string' },
-            message:    { type: 'string' },
-            audio_url:  { type: 'string', nullable: true },
-            priority:   { type: 'integer' },
-            is_active:  { type: 'boolean' },
-            created_at: { type: 'string', format: 'date-time' },
+            id:           { type: 'integer' },
+            title:        { type: 'string' },
+            message:      { type: 'string' },
+            type:         { type: 'string', enum: ['recorded', 'scheduled'] },
+            audio_url:    { type: 'string', nullable: true },
+            hour:         { type: 'integer', nullable: true },
+            minute:       { type: 'integer', nullable: true },
+            days:         { type: 'integer', example: 62, description: 'Bitmask Mon=1..Sun=64' },
+            scheduled_at: { type: 'string', example: '08:30', nullable: true },
+            priority:     { type: 'integer' },
+            is_active:    { type: 'boolean' },
+            created_at:   { type: 'string', format: 'date-time' },
           },
         },
         User: {
@@ -467,25 +472,76 @@ const options = {
       // ── Announcements ───────────────────────────────────────────────────────
       '/api/announcements/latest': {
         get: {
-          tags: ['Announcements'], summary: 'Get latest announcement (device)', security: [{ bearerAuth: [] }],
+          tags: ['Announcements'], summary: 'Get latest active announcement (device)', security: [{ bearerAuth: [] }],
           responses: { 200: { description: 'Latest announcement', content: { 'application/json': { schema: { $ref: '#/components/schemas/Announcement' } } } } },
+        },
+      },
+      '/api/announcements/scheduled': {
+        get: {
+          tags: ['Announcements'], summary: 'List scheduled announcements (controller)', security: [{ bearerAuth: [] }],
+          responses: { 200: { description: 'Scheduled list', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Announcement' } } } } } },
+        },
+        post: {
+          tags: ['Announcements'], summary: 'Create scheduled announcement (legacy alias)', security: [{ bearerAuth: [] }],
+          responses: { 201: { description: 'Created' } },
         },
       },
       '/api/announcements': {
         get: {
-          tags: ['Announcements'], summary: 'Get announcements (device)', security: [{ bearerAuth: [] }],
-          parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 20 } }],
-          responses: { 200: { description: 'List' } },
+          tags: ['Announcements'], summary: 'List announcements', security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
+            { name: 'all', in: 'query', schema: { type: 'boolean' }, description: 'Controller: include inactive/scheduled pending' },
+            { name: 'type', in: 'query', schema: { type: 'string', enum: ['recorded', 'scheduled'] } },
+          ],
+          responses: { 200: { description: 'List', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Announcement' } } } } } },
         },
         post: {
-          tags: ['Announcements'], summary: 'Create announcement (admin)', security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, message: { type: 'string' }, priority: { type: 'integer' } } } } } },
-          responses: { 200: { description: 'Created' } },
+          tags: ['Announcements'],
+          summary: 'Create announcement (unified — multipart or JSON)',
+          description: 'Multipart fields: title*, message, type*, hour, minute, days, is_active, priority, audio (file). type=recorded|scheduled.',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'multipart/form-data': {
+                schema: {
+                  type: 'object',
+                  required: ['title', 'type'],
+                  properties: {
+                    title: { type: 'string' },
+                    message: { type: 'string' },
+                    type: { type: 'string', enum: ['recorded', 'scheduled'] },
+                    hour: { type: 'integer' },
+                    minute: { type: 'integer' },
+                    days: { type: 'integer', default: 62 },
+                    is_active: { type: 'integer' },
+                    priority: { type: 'integer' },
+                    audio: { type: 'string', format: 'binary' },
+                  },
+                },
+              },
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Announcement' },
+              },
+            },
+          },
+          responses: { 201: { description: 'Created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Announcement' } } } } },
         },
       },
       '/api/announcements/{id}': {
+        get: {
+          tags: ['Announcements'], summary: 'Get single announcement', security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: { 200: { description: 'Announcement', content: { 'application/json': { schema: { $ref: '#/components/schemas/Announcement' } } } } },
+        },
+        put: {
+          tags: ['Announcements'], summary: 'Update announcement (multipart or JSON)', security: [{ bearerAuth: [] }],
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: { 200: { description: 'Updated' } },
+        },
         delete: {
-          tags: ['Announcements'], summary: 'Delete announcement (admin)', security: [{ bearerAuth: [] }],
+          tags: ['Announcements'], summary: 'Delete announcement', security: [{ bearerAuth: [] }],
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: { 200: { description: 'Deleted' } },
         },
