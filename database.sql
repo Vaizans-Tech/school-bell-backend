@@ -66,12 +66,13 @@ CREATE TABLE IF NOT EXISTS sounds (
 );
 
 -- Announcements (user-isolated)
--- type='recorded': audio uploaded by controller, plays immediately (is_active=1)
--- type='scheduled': set scheduled_at TIME (HH:MM), cron activates at that time (is_active=0→1)
+-- type=recorded  → play immediately once
+-- type=scheduled → weekly repeat (hour + minute + days bitmask) — আগের system
+-- type=onetime   → calendar specific date(s), fires once per date — নতুন feature
 CREATE TABLE IF NOT EXISTS announcements (
   id           INT AUTO_INCREMENT PRIMARY KEY,
   user_id      INT NOT NULL,
-  type         ENUM('recorded','scheduled') DEFAULT 'recorded',
+  type         ENUM('recorded','onetime','scheduled') DEFAULT 'recorded',
   title        VARCHAR(300) NOT NULL,
   message      TEXT,
   audio_url    VARCHAR(500),
@@ -83,6 +84,17 @@ CREATE TABLE IF NOT EXISTS announcements (
   days         INT DEFAULT 62,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS announcement_dates (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  announcement_id INT NOT NULL,
+  play_date       DATE NOT NULL,
+  fired           TINYINT DEFAULT 0,
+  fired_at        DATETIME DEFAULT NULL,
+  created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_ann_play_date (announcement_id, play_date),
+  FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE
 );
 
 -- Azan Times (user-isolated, one row per prayer per day per user)

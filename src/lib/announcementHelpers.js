@@ -1,8 +1,8 @@
 const { getPublicBaseUrl } = require('./publicUrl');
 
-/** Mon=1, Tue=2, Wed=4, Thu=8, Fri=16, Sat=32, Sun=64 (same as schedules.days) */
+/** Mon=1, Tue=2, Wed=4 ... Sun=64 — same as schedules.days */
 function todayDayBit(date = new Date()) {
-  const jsDay = date.getDay(); // 0=Sun .. 6=Sat
+  const jsDay = date.getDay();
   const bitIndex = jsDay === 0 ? 6 : jsDay - 1;
   return 1 << bitIndex;
 }
@@ -63,11 +63,48 @@ function resolveHourMinute(body, existing = null) {
   return { hour: null, minute: null, scheduled_at: null };
 }
 
-function mapAnnouncement(row, req) {
+/** Calendar dates — only for type=onetime */
+function parsePlayDates(body) {
+  let raw = body.dates ?? body.play_dates ?? null;
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[')) {
+      try { raw = JSON.parse(trimmed); } catch { raw = [trimmed]; }
+    } else if (trimmed.includes(',')) {
+      raw = trimmed.split(',');
+    } else {
+      raw = [trimmed];
+    }
+  }
+
+  if (body.play_date) raw = [body.play_date];
+  if (!Array.isArray(raw)) return [];
+
+  const today = new Date().toISOString().slice(0, 10);
+  return [...new Set(
+    raw
+      .map(d => String(d).trim().slice(0, 10))
+      .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= today)
+  )].sort();
+}
+
+function normalizeType(type) {
+  const t = (type || 'recorded').toLowerCase();
+  if (t === 'live') return null;
+  if (['recorded', 'onetime', 'scheduled'].includes(t)) return t;
+  return null;
+}
+
+function mapAnnouncement(row, req, playDates = []) {
   const baseUrl = getPublicBaseUrl(req);
-  const audioFilename = row.audio_url && !String(row.audio_url).startsWith('http')
-    ? row.audio_url
-    : null;
+  const pendingDates = playDates.filter(d => !d.fired).map(d => String(d.play_date).slice(0, 10));
+  const allDates = playDates.map(d => ({
+    date: String(d.play_date).slice(0, 10),
+    fired: !!d.fired,
+    fired_at: d.fired_at || null,
+  }));
 
   return {
     id: row.id,
@@ -80,20 +117,28 @@ function mapAnnouncement(row, req) {
       : null,
     hour: row.hour != null ? row.hour : null,
     minute: row.minute != null ? row.minute : null,
-    days: row.days != null ? row.days : 62,
+    days: row.days != null ? row.days : null,
     scheduled_at: formatScheduledAtDisplay(row),
+    play_dates: allDates.map(d => d.date),
+    dates: allDates,
+    pending_dates: pendingDates,
+    next_play_date: pendingDates[0] || null,
     is_active: row.is_active ? 1 : 0,
     priority: row.priority || 0,
     created_at: row.created_at,
-    ...(audioFilename ? { audio_filename: audioFilename } : {}),
   };
 }
 
 function validateAudioFile(file) {
   if (!file) return null;
-  if (!file.size || file.size <= 0) {
-    return 'Audio file is empty (0 bytes)';
-  }
+  if (!file.size || file.size <= 0) return 'Audio file is empty (0 bytes)';
+  return null;
+}
+
+/** Validate onetime calendar dates only */
+function validateOnetimeDates(type, dates) {
+  if (type !== 'onetime') return null;
+  if (!dates.length) return 'dates required for onetime (YYYY-MM-DD array from calendar)';
   return null;
 }
 
@@ -103,7 +148,10 @@ module.exports = {
   parseIntField,
   parseBoolField,
   resolveHourMinute,
+  parsePlayDates,
+  normalizeType,
   mapAnnouncement,
   validateAudioFile,
+  validateOnetimeDates,
   formatScheduledAt,
 };
