@@ -5,8 +5,8 @@ const options = {
     openapi: '3.0.0',
     info: {
       title: 'School Bell API',
-      version: '1.0.0',
-      description: 'REST API for School Bell Android App & Admin Panel',
+      version: '2.0.0',
+      description: 'REST API for School Bell Android App & Admin Panel. Live announcement uses WebRTC signaling at /api/live/* (audio is peer-to-peer).',
     },
     servers: [
       { url: 'https://api.shikkhasomoy.com', description: 'Production Server' },
@@ -131,6 +131,44 @@ const options = {
             },
           },
         },
+        IceServer: {
+          type: 'object',
+          properties: {
+            urls:       { type: 'string', example: 'stun:stun.l.google.com:19302' },
+            username:   { type: 'string' },
+            credential: { type: 'string' },
+          },
+        },
+        LiveSdp: {
+          type: 'object',
+          required: ['sdp', 'type'],
+          properties: {
+            sdp:  { type: 'string', description: 'SDP string' },
+            type: { type: 'string', enum: ['offer', 'answer'] },
+          },
+        },
+        LiveSession: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', format: 'uuid' },
+            status: {
+              type: 'string',
+              enum: ['waiting_player', 'player_joined', 'offer_sent', 'connected', 'ended'],
+            },
+            offer:  { $ref: '#/components/schemas/LiveSdp', nullable: true },
+            answer: { $ref: '#/components/schemas/LiveSdp', nullable: true },
+            created_at:   { type: 'integer', description: 'Unix ms' },
+            connected_at: { type: 'integer', nullable: true },
+          },
+        },
+        LiveIceCandidate: {
+          type: 'object',
+          properties: {
+            candidate:     { type: 'string' },
+            sdpMid:        { type: 'string', nullable: true },
+            sdpMLineIndex: { type: 'integer', nullable: true },
+          },
+        },
       },
     },
     tags: [
@@ -143,6 +181,7 @@ const options = {
       { name: 'Sounds',        description: 'Legacy endpoints — use type=bell|azan query' },
       { name: 'Azan Times',    description: 'Prayer schedule times per user' },
       { name: 'Announcements', description: 'Announcement management' },
+      { name: 'Live', description: 'WebRTC live announcement signaling (no media through server)' },
       { name: 'Admin',         description: 'Admin dashboard & user management' },
     ],
     paths: {
@@ -544,6 +583,177 @@ const options = {
           tags: ['Announcements'], summary: 'Delete announcement', security: [{ bearerAuth: [] }],
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: { 200: { description: 'Deleted' } },
+        },
+      },
+      // ── Live (WebRTC signaling) ─────────────────────────────────────────────
+      '/api/live/config': {
+        get: {
+          tags: ['Live'],
+          summary: 'Get STUN/TURN ICE servers',
+          description: 'Returns ice_servers for WebRTC PeerConnection. Media never passes through the backend.',
+          security: [{ bearerAuth: [] }],
+          responses: {
+            200: {
+              description: 'ICE server list',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      ice_servers: { type: 'array', items: { $ref: '#/components/schemas/IceServer' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/live/session': {
+        post: {
+          tags: ['Live'],
+          summary: 'Create live session (controller)',
+          description: 'Starts WebRTC signaling. Notifies player via WebSocket { type: live_session }.',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['role'],
+                  properties: {
+                    role: { type: 'string', enum: ['controller'] },
+                    device_id: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Session created with session_id and ice_servers' } },
+        },
+        get: {
+          tags: ['Live'],
+          summary: 'Get session state (poll offer/answer)',
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'session_id', in: 'query', schema: { type: 'string', format: 'uuid' } },
+            { name: 'role', in: 'query', required: true, schema: { type: 'string', enum: ['controller', 'player'] } },
+            { name: 'device_id', in: 'query', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Session state for role' } },
+        },
+      },
+      '/api/live/offer': {
+        post: {
+          tags: ['Live'],
+          summary: 'Send SDP offer (controller)',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['session_id', 'role'],
+                  properties: {
+                    session_id: { type: 'string', format: 'uuid' },
+                    role: { type: 'string', enum: ['controller'] },
+                    offer: { $ref: '#/components/schemas/LiveSdp' },
+                    sdp: { type: 'string' },
+                    type: { type: 'string', enum: ['offer'] },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Offer stored' } },
+        },
+      },
+      '/api/live/answer': {
+        post: {
+          tags: ['Live'],
+          summary: 'Send SDP answer (player)',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['session_id', 'role'],
+                  properties: {
+                    session_id: { type: 'string', format: 'uuid' },
+                    role: { type: 'string', enum: ['player'] },
+                    answer: { $ref: '#/components/schemas/LiveSdp' },
+                    sdp: { type: 'string' },
+                    type: { type: 'string', enum: ['answer'] },
+                    device_id: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Answer stored' } },
+        },
+      },
+      '/api/live/ice': {
+        post: {
+          tags: ['Live'],
+          summary: 'Submit ICE candidate',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['session_id', 'role', 'candidate'],
+                  properties: {
+                    session_id: { type: 'string', format: 'uuid' },
+                    role: { type: 'string', enum: ['controller', 'player'] },
+                    candidate: { oneOf: [{ type: 'string' }, { $ref: '#/components/schemas/LiveIceCandidate' }] },
+                    sdpMid: { type: 'string' },
+                    sdpMLineIndex: { type: 'integer' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Candidate queued for peer' } },
+        },
+        get: {
+          tags: ['Live'],
+          summary: 'Poll ICE candidates from peer',
+          security: [{ bearerAuth: [] }],
+          parameters: [
+            { name: 'session_id', in: 'query', required: true, schema: { type: 'string', format: 'uuid' } },
+            { name: 'role', in: 'query', required: true, schema: { type: 'string', enum: ['controller', 'player'] } },
+          ],
+          responses: { 200: { description: 'Peer ICE candidates (drained from queue)' } },
+        },
+      },
+      '/api/live/end': {
+        post: {
+          tags: ['Live'],
+          summary: 'End live session',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['session_id'],
+                  properties: {
+                    session_id: { type: 'string', format: 'uuid' },
+                    reason: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Session ended; player notified via WebSocket live_end' } },
         },
       },
       // ── Admin ───────────────────────────────────────────────────────────────

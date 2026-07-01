@@ -99,7 +99,7 @@ async function insertAnnouncement(req, res) {
   const { title, message, type: rawType, priority } = req.body;
   const type = normalizeType(rawType);
   if (!title) return res.status(400).json({ error: 'title is required' });
-  if (!type) return res.status(400).json({ error: 'type must be recorded, onetime, or scheduled (live uses WebSocket)' });
+  if (!type) return res.status(400).json({ error: 'type must be recorded, onetime, or scheduled (live uses WebRTC /api/live/*)' });
 
   let audioUrl = null;
   try {

@@ -32,6 +32,12 @@ services:
       DB_NAME: ${DB_NAME:-school_bell}
       JWT_SECRET: ${JWT_SECRET:-change_this_secret}
       UPLOAD_DIR: uploads
+      STUN_SERVERS: ${STUN_SERVERS:-stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302}
+      TURN_URL: ${TURN_URL:-}
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_PASSWORD: ${TURN_PASSWORD:-}
+      LIVE_SIGNALING_TIMEOUT_MS: ${LIVE_SIGNALING_TIMEOUT_MS:-300000}
+      LIVE_SESSION_MAX_MS: ${LIVE_SESSION_MAX_MS:-7200000}
     volumes:
       - uploads_data:/app/uploads
     depends_on:
