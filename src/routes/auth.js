@@ -32,7 +32,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '30d' }
     );
 
-    res.json({ token, username: user.username, message: 'Login successful' });
+    res.json({ token, id: user.id, username: user.username, role: user.role, message: 'Login successful' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -73,7 +73,7 @@ router.post('/register', async (req, res) => {
       { expiresIn: '30d' }
     );
 
-    res.status(201).json({ token, message: 'Registration successful' });
+    res.status(201).json({ token, id: result.insertId, username, role: 'user', message: 'Registration successful' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -96,7 +96,7 @@ router.post('/admin/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.json({ token, username: user.username, role: user.role });
+    res.json({ token, id: user.id, username: user.username, role: user.role });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

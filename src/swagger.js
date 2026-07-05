@@ -795,6 +795,35 @@ const options = {
           responses: { 200: { description: 'Created' } },
         },
       },
+      '/api/user/{userId}': {
+        get: {
+          tags: ['Users'], summary: 'Get user with devices', security: [{ bearerAuth: [] }],
+          description: 'Admin can view any user. Regular users can only view their own profile.',
+          parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: {
+            200: {
+              description: 'User details with linked devices',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'integer' },
+                      username: { type: 'string' },
+                      role: { type: 'string', enum: ['admin', 'user'] },
+                      school_name: { type: 'string', nullable: true },
+                      created_at: { type: 'string', format: 'date-time' },
+                      devices: { type: 'array', items: { $ref: '#/components/schemas/Device' } },
+                    },
+                  },
+                },
+              },
+            },
+            403: { description: 'Access denied' },
+            404: { description: 'User not found' },
+          },
+        },
+      },
       '/api/admin/users/{id}': {
         put: {
           tags: ['Admin'], summary: 'Update user', security: [{ bearerAuth: [] }],
