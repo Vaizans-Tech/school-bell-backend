@@ -1,18 +1,43 @@
 const router = require('express').Router();
 const { authMiddleware } = require('../middleware/auth');
 const { getIceServers } = require('../lib/webrtcConfig');
-const { log, logError } = require('../lib/liveLogger');
-const { notifyUserReceivers, notifyController } = require('../ws/announcements');
+const {
+  log,
+  logError,
+  summarizeIceServers,
+  summarizeSdp,
+  summarizeIceCandidate,
+} = require('../lib/liveLogger');
+const {
+  notifyUserReceivers,
+  notifyController,
+  deliverToRole,
+  isPeerOnline,
+  setOnWsConnect,
+} = require('../ws/announcements');
 const sessionStore = require('../services/live/sessionStore');
+const { getMonitoringDashboard } = require('../services/live/monitoring');
+const { FAILURE_REASON } = require('../lib/liveConstants');
+
+function deliverSignaling(session, message, targetRole) {
+  return deliverToRole(session.userId, targetRole, message);
+}
+
+sessionStore.setDeliverSignaling(deliverSignaling);
 
 sessionStore.setOnSessionEnded((session) => {
   const payload = {
     type: 'live_end',
     session_id: session.id,
-    reason: session.endReason || 'ended',
+    reason: session.endReason || session.failureReason || 'ended',
+    failure_reason: session.failureReason || null,
   };
   notifyUserReceivers(session.userId, payload);
   notifyController(session.userId, payload);
+});
+
+setOnWsConnect((userId, role) => {
+  sessionStore.resyncSignalingForPeer(userId, role);
 });
 
 function parseSdpPayload(body, fieldName) {
@@ -29,42 +54,106 @@ function parseSdpPayload(body, fieldName) {
   return { error: `${fieldName} or sdp+type required`, status: 400 };
 }
 
-function notifyPlayer(userId, message) {
+function notifyPlayer(userId, message, session = null) {
   const sent = notifyUserReceivers(userId, message);
-  log('player_notified', { user_id: userId, sent, type: message.type });
+  const details = { user_id: userId, sent, type: message.type };
+  if (message.session_id) details.session_id = message.session_id;
+  if (message.ice_servers) details.ice_servers = summarizeIceServers(message.ice_servers);
+  log('player_notified', details);
+  if (session && sent > 0 && message.type === 'live_offer') {
+    sessionStore.markDelivered(session, 'offer', session.offerSentAt || Date.now());
+  }
+  if (sent === 0 && session) {
+    sessionStore.deliverOrQueue(session, message, 'player');
+  }
   return sent;
+}
+
+function notifyControllerPeer(userId, message, session = null) {
+  const sent = notifyController(userId, message);
+  const details = { user_id: userId, sent, type: message.type };
+  if (message.session_id) details.session_id = message.session_id;
+  log('controller_notified', details);
+  if (session && sent > 0 && message.type === 'live_answer') {
+    sessionStore.markDelivered(session, 'answer', session.answerReceivedAt || Date.now());
+  }
+  if (sent === 0 && session) {
+    sessionStore.deliverOrQueue(session, message, 'controller');
+  }
+  return sent;
+}
+
+function pushIceToPeer(session, fromRole, candidate) {
+  const targetRole = fromRole === 'controller' ? 'player' : 'controller';
+  const message = {
+    type: 'live_ice',
+    session_id: session.id,
+    from_role: fromRole,
+    candidate: {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    },
+  };
+
+  const sent = deliverToRole(session.userId, targetRole, message);
+  log('ice_candidate_pushed', {
+    session_id: session.id,
+    from_role: fromRole,
+    to_role: targetRole,
+    sent,
+    candidate: summarizeIceCandidate(candidate),
+  });
+
+  if (sent === 0) {
+    sessionStore.deliverOrQueue(session, message, targetRole);
+  }
 }
 
 /** ICE/STUN/TURN config for WebRTC clients */
 router.get('/config', authMiddleware, (req, res) => {
-  res.json({ ice_servers: getIceServers() });
+  const ice_servers = getIceServers();
+  log('config_returned', { user_id: req.user.id, ice_servers: summarizeIceServers(ice_servers) });
+  res.json({ ice_servers });
 });
 
-/**
- * POST /api/live/session — Controller starts a live WebRTC session.
- * Body: { role: "controller", device_id? }
- */
+/** POST /api/live/session — Controller starts a live WebRTC session */
 router.post('/session', authMiddleware, (req, res) => {
+  const start = Date.now();
   try {
     const role = sessionStore.normalizeRole(req.body.role);
     if (role !== 'controller') {
-      return res.status(403).json({ error: 'Only controller can create a live session' });
+      return res.status(403).json({
+        error: 'Only controller can create a live session',
+        failure_reason: FAILURE_REASON.AUTHENTICATION_FAILED,
+      });
     }
 
     const session = sessionStore.createSession(req.user.id, req.body.device_id || null);
     const ice_servers = getIceServers();
 
+    log('session_create', {
+      session_id: session.id,
+      user_id: req.user.id,
+      ice_servers: summarizeIceServers(ice_servers),
+      player_online: isPeerOnline(req.user.id, 'player'),
+    });
+
     notifyPlayer(req.user.id, {
       type: 'live_session',
       session_id: session.id,
       ice_servers,
-    });
+    }, session);
+
+    const ms = Date.now() - start;
+    log('timing', { session_id: session.id, stage: 'session_created', ms });
 
     res.status(201).json({
       session_id: session.id,
       status: session.status,
       ice_servers,
       message: 'Live session created — waiting for player',
+      timing_ms: ms,
     });
   } catch (err) {
     logError('session_create_failed', err, { user_id: req.user.id });
@@ -72,10 +161,7 @@ router.post('/session', authMiddleware, (req, res) => {
   }
 });
 
-/**
- * GET /api/live/session — Session state (controller polls answer, player polls offer).
- * Query: session_id?, role=controller|player
- */
+/** GET /api/live/session — Session state + signaling resync on reconnect */
 router.get('/session', authMiddleware, (req, res) => {
   try {
     const role = sessionStore.normalizeRole(req.query.role || req.body?.role);
@@ -91,20 +177,39 @@ router.get('/session', authMiddleware, (req, res) => {
     }
 
     if (session.userId !== req.user.id) {
-      return res.status(403).json({ error: 'Not your session' });
+      return res.status(403).json({
+        error: 'Not your session',
+        failure_reason: FAILURE_REASON.AUTHENTICATION_FAILED,
+      });
     }
 
     if (session.status === 'ended') {
-      return res.status(410).json({ error: 'Session already ended', session_id: session.id });
+      return res.status(410).json({
+        error: 'Session already ended',
+        session_id: session.id,
+        failure_reason: session.failureReason || session.endReason,
+      });
     }
 
-    if (role === 'player' && session.status === 'waiting_player') {
+    if (role === 'player' && (session.status === 'player_waiting' || session.status === 'created')) {
       sessionStore.registerPlayer(session.id, req.user.id, req.query.device_id || null);
     }
 
+    sessionStore.resyncSignalingForPeer(req.user.id, role);
+
+    const ice_servers = getIceServers();
+    log('session_get', {
+      session_id: session.id,
+      user_id: req.user.id,
+      role,
+      status: session.status,
+      has_offer: Boolean(session.offer),
+      has_answer: Boolean(session.answer),
+    });
+
     res.json({
       session: sessionStore.publicSession(session, role),
-      ice_servers: getIceServers(),
+      ice_servers,
     });
   } catch (err) {
     logError('session_get_failed', err, { user_id: req.user.id });
@@ -112,14 +217,16 @@ router.get('/session', authMiddleware, (req, res) => {
   }
 });
 
-/**
- * POST /api/live/offer — Controller sends SDP offer (no media through API).
- */
+/** POST /api/live/offer */
 router.post('/offer', authMiddleware, (req, res) => {
+  const start = Date.now();
   try {
     const role = sessionStore.normalizeRole(req.body.role);
     if (role !== 'controller') {
-      return res.status(403).json({ error: 'Only controller can send offer' });
+      return res.status(403).json({
+        error: 'Only controller can send offer',
+        failure_reason: FAILURE_REASON.AUTHENTICATION_FAILED,
+      });
     }
 
     const sessionId = req.body.session_id;
@@ -129,29 +236,47 @@ router.post('/offer', authMiddleware, (req, res) => {
     if (parsed.error) return res.status(parsed.status).json({ error: parsed.error });
 
     const result = sessionStore.setOffer(sessionId, req.user.id, parsed.value);
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        failure_reason: result.failureReason || null,
+      });
+    }
+
+    log('offer_stored', {
+      session_id: sessionId,
+      user_id: req.user.id,
+      sdp: summarizeSdp(parsed.value),
+    });
 
     notifyPlayer(req.user.id, {
       type: 'live_offer',
       session_id: sessionId,
       offer: parsed.value,
-    });
+    }, result.session);
 
-    res.json({ message: 'Offer stored', session_id: sessionId, status: result.session.status });
+    res.json({
+      message: 'Offer stored and pushed via WebSocket',
+      session_id: sessionId,
+      status: result.session.status,
+      timing_ms: Date.now() - start,
+    });
   } catch (err) {
     logError('offer_failed', err, { user_id: req.user.id });
     res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * POST /api/live/answer — Player sends SDP answer.
- */
+/** POST /api/live/answer */
 router.post('/answer', authMiddleware, (req, res) => {
+  const start = Date.now();
   try {
     const role = sessionStore.normalizeRole(req.body.role);
     if (role !== 'player') {
-      return res.status(403).json({ error: 'Only player can send answer' });
+      return res.status(403).json({
+        error: 'Only player can send answer',
+        failure_reason: FAILURE_REASON.AUTHENTICATION_FAILED,
+      });
     }
 
     const sessionId = req.body.session_id;
@@ -166,18 +291,30 @@ router.post('/answer', authMiddleware, (req, res) => {
       parsed.value,
       req.body.device_id || null
     );
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        failure_reason: result.failureReason || null,
+      });
+    }
 
-    notifyController(req.user.id, {
+    log('answer_stored', {
+      session_id: sessionId,
+      user_id: req.user.id,
+      sdp: summarizeSdp(parsed.value),
+    });
+
+    notifyControllerPeer(req.user.id, {
       type: 'live_answer',
       session_id: sessionId,
       answer: parsed.value,
-    });
+    }, result.session);
 
     res.json({
-      message: 'Answer stored — controller notified via WebSocket or poll GET /api/live/session',
+      message: 'Answer stored and pushed via WebSocket',
       session_id: sessionId,
       status: result.session.status,
+      timing_ms: Date.now() - start,
     });
   } catch (err) {
     logError('answer_failed', err, { user_id: req.user.id });
@@ -186,7 +323,8 @@ router.post('/answer', authMiddleware, (req, res) => {
 });
 
 /**
- * POST /api/live/ice — Exchange ICE candidates (peer polls via GET /api/live/ice).
+ * POST /api/live/ice — Submit ICE candidate; immediately pushed to peer via WebSocket.
+ * GET polling removed — use WebSocket live_ice with full candidate payload.
  */
 router.post('/ice', authMiddleware, (req, res) => {
   try {
@@ -198,56 +336,120 @@ router.post('/ice', authMiddleware, (req, res) => {
     const candidate = req.body.candidate;
     if (!candidate) return res.status(400).json({ error: 'candidate required' });
 
-    const result = sessionStore.addIceCandidate(sessionId, req.user.id, role, {
+    const normalizedCandidate = {
       candidate: typeof candidate === 'string' ? candidate : candidate.candidate,
       sdpMid: req.body.sdpMid ?? candidate.sdpMid ?? null,
       sdpMLineIndex: req.body.sdpMLineIndex ?? candidate.sdpMLineIndex ?? null,
-    });
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    };
 
-    if (role === 'player') {
-      notifyController(req.user.id, { type: 'live_ice', session_id: sessionId });
-    } else {
-      notifyPlayer(req.user.id, { type: 'live_ice', session_id: sessionId });
+    const result = sessionStore.addIceCandidate(sessionId, req.user.id, role, normalizedCandidate);
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        failure_reason: result.failureReason || null,
+      });
     }
 
-    res.json({ message: 'ICE candidate queued', session_id: sessionId });
+    if (!result.duplicate) {
+      pushIceToPeer(result.session, role, normalizedCandidate);
+    }
+
+    res.json({
+      message: result.duplicate ? 'Duplicate ICE ignored' : 'ICE candidate pushed via WebSocket',
+      session_id: sessionId,
+      status: result.session.status,
+      duplicate: Boolean(result.duplicate),
+    });
   } catch (err) {
     logError('ice_post_failed', err, { user_id: req.user.id });
     res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * GET /api/live/ice — Poll ICE candidates from the peer.
- */
+/** GET /api/live/ice — REMOVED: ICE delivered via WebSocket push */
 router.get('/ice', authMiddleware, (req, res) => {
+  log('ice_poll_rejected', {
+    user_id: req.user.id,
+    session_id: req.query.session_id,
+    role: req.query.role,
+  });
+  res.status(410).json({
+    error: 'ICE polling removed — candidates are pushed immediately via WebSocket { type: live_ice, candidate }',
+    migration: 'Handle live_ice WebSocket messages and call addIceCandidate() directly',
+  });
+});
+
+/** POST /api/live/event — Client connection diagnostics (ICE connected, TURN used, etc.) */
+router.post('/event', authMiddleware, (req, res) => {
   try {
-    const sessionId = req.query.session_id;
-    const role = sessionStore.normalizeRole(req.query.role);
+    const sessionId = req.body.session_id;
+    const role = sessionStore.normalizeRole(req.body.role);
+    const event = req.body.event;
     if (!sessionId) return res.status(400).json({ error: 'session_id required' });
-    if (!role) return res.status(400).json({ error: 'role query required' });
+    if (!role) return res.status(400).json({ error: 'role required' });
+    if (!event) return res.status(400).json({ error: 'event required' });
 
-    const result = sessionStore.drainIceCandidates(sessionId, req.user.id, role);
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    const result = sessionStore.recordClientEvent(
+      sessionId,
+      req.user.id,
+      role,
+      event,
+      req.body.details || {}
+    );
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        failure_reason: result.failureReason || null,
+      });
+    }
 
-    res.json({ session_id: sessionId, candidates: result.candidates });
+    res.json({
+      message: 'Event recorded',
+      session_id: sessionId,
+      status: result.session.status,
+      ended: Boolean(result.ended),
+    });
   } catch (err) {
-    logError('ice_get_failed', err, { user_id: req.user.id });
+    logError('event_failed', err, { user_id: req.user.id });
     res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * POST /api/live/end — End live session (controller or player).
- */
+/** GET /api/live/diagnostics/:session_id — Per-session diagnostic timeline */
+router.get('/diagnostics/:session_id', authMiddleware, (req, res) => {
+  const session = sessionStore.getSession(req.params.session_id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.userId !== req.user.id) {
+    return res.status(403).json({
+      error: 'Not your session',
+      failure_reason: FAILURE_REASON.AUTHENTICATION_FAILED,
+    });
+  }
+  res.json({ diagnostics: sessionStore.publicDiagnostics(session) });
+});
+
+/** GET /api/live/monitoring — Production monitoring dashboard data */
+router.get('/monitoring', authMiddleware, (req, res) => {
+  res.json({ monitoring: getMonitoringDashboard() });
+});
+
+/** POST /api/live/end */
 router.post('/end', authMiddleware, (req, res) => {
   try {
     const sessionId = req.body.session_id;
     if (!sessionId) return res.status(400).json({ error: 'session_id required' });
 
-    const result = sessionStore.endSession(sessionId, req.user.id, req.body.reason || 'ended');
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    const result = sessionStore.endSession(
+      sessionId,
+      req.user.id,
+      req.body.reason || FAILURE_REASON.ENDED
+    );
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        failure_reason: result.failureReason || null,
+      });
+    }
 
     res.json({ message: 'Session ended', session_id: sessionId });
   } catch (err) {

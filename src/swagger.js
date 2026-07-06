@@ -153,7 +153,10 @@ const options = {
             session_id: { type: 'string', format: 'uuid' },
             status: {
               type: 'string',
-              enum: ['waiting_player', 'player_joined', 'offer_sent', 'connected', 'ended'],
+              enum: [
+                'created', 'player_waiting', 'player_ready', 'offer_sent',
+                'answer_received', 'ice_checking', 'connected', 'streaming', 'ended',
+              ],
             },
             offer:  { $ref: '#/components/schemas/LiveSdp', nullable: true },
             answer: { $ref: '#/components/schemas/LiveSdp', nullable: true },
@@ -700,7 +703,8 @@ const options = {
       '/api/live/ice': {
         post: {
           tags: ['Live'],
-          summary: 'Submit ICE candidate',
+          summary: 'Submit ICE candidate (pushed immediately via WebSocket)',
+          description: 'Peer receives { type: live_ice, session_id, from_role, candidate }. GET polling removed.',
           security: [{ bearerAuth: [] }],
           requestBody: {
             required: true,
@@ -720,17 +724,57 @@ const options = {
               },
             },
           },
-          responses: { 200: { description: 'Candidate queued for peer' } },
+          responses: { 200: { description: 'Candidate pushed to peer via WebSocket' } },
         },
+      },
+      '/api/live/event': {
+        post: {
+          tags: ['Live'],
+          summary: 'Report client WebRTC events (ICE connected, TURN used, etc.)',
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['session_id', 'role', 'event'],
+                  properties: {
+                    session_id: { type: 'string', format: 'uuid' },
+                    role: { type: 'string', enum: ['controller', 'player'] },
+                    event: {
+                      type: 'string',
+                      enum: [
+                        'ice_connected', 'ice_failed', 'peer_connected', 'peer_closed',
+                        'turn_used', 'stun_used', 'relay_used', 'network_changed',
+                      ],
+                    },
+                    details: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Event recorded' } },
+        },
+      },
+      '/api/live/diagnostics/{session_id}': {
         get: {
           tags: ['Live'],
-          summary: 'Poll ICE candidates from peer',
+          summary: 'Per-session diagnostic timeline',
           security: [{ bearerAuth: [] }],
           parameters: [
-            { name: 'session_id', in: 'query', required: true, schema: { type: 'string', format: 'uuid' } },
-            { name: 'role', in: 'query', required: true, schema: { type: 'string', enum: ['controller', 'player'] } },
+            { name: 'session_id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
           ],
-          responses: { 200: { description: 'Peer ICE candidates (drained from queue)' } },
+          responses: { 200: { description: 'Session diagnostics' } },
+        },
+      },
+      '/api/live/monitoring': {
+        get: {
+          tags: ['Live'],
+          summary: 'Production monitoring dashboard metrics',
+          security: [{ bearerAuth: [] }],
+          responses: { 200: { description: 'Aggregated live session metrics' } },
         },
       },
       '/api/live/end': {

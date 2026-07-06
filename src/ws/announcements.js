@@ -3,11 +3,28 @@ const jwt = require('jsonwebtoken');
 
 /** @type {Map<number, Set<WebSocket>>} */
 const receivers = new Map();
-/** @type {Map<number, Set<WebSocket>>} controller signaling subscribers (no audio) */
+/** @type {Map<number, Set<WebSocket>>} */
 const controllers = new Map();
+
+/** @type {((userId: number, role: string) => void) | null} */
+let onWsConnect = null;
 
 function jwtSecret() {
   return process.env.JWT_SECRET || 'school_bell_secret_2024';
+}
+
+function setOnWsConnect(handler) {
+  onWsConnect = handler;
+}
+
+function isPeerOnline(userId, role) {
+  const map = role === 'controller' ? controllers : receivers;
+  const set = map.get(userId);
+  if (!set) return false;
+  for (const ws of set) {
+    if (ws.readyState === ws.OPEN) return true;
+  }
+  return false;
 }
 
 function notifyUserReceivers(userId, message) {
@@ -18,12 +35,17 @@ function notifyController(userId, message) {
   return sendToMap(controllers, userId, message);
 }
 
+function deliverToRole(userId, role, message) {
+  if (role === 'controller') return notifyController(userId, message);
+  return notifyUserReceivers(userId, message);
+}
+
 function sendToMap(map, userId, message) {
   const set = map.get(userId);
   if (!set) return 0;
   const payload = typeof message === 'string' ? message : JSON.stringify(message);
   let sent = 0;
-  set.forEach(ws => {
+  set.forEach((ws) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(payload);
       sent++;
@@ -59,6 +81,7 @@ function attachAnnouncementWebSocket(server) {
           if (set.size === 0) controllers.delete(userId);
         }
       });
+      if (onWsConnect) onWsConnect(userId, 'controller');
       return;
     }
 
@@ -77,9 +100,18 @@ function attachAnnouncementWebSocket(server) {
         if (set.size === 0) receivers.delete(userId);
       }
     });
+
+    if (onWsConnect) onWsConnect(userId, 'player');
   });
 
   return wss;
 }
 
-module.exports = { attachAnnouncementWebSocket, notifyUserReceivers, notifyController };
+module.exports = {
+  attachAnnouncementWebSocket,
+  notifyUserReceivers,
+  notifyController,
+  deliverToRole,
+  isPeerOnline,
+  setOnWsConnect,
+};

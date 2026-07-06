@@ -10,4 +10,67 @@ function logError(event, err, details = {}) {
   console.error(`${PREFIX} ${event}: ${msg}`, details);
 }
 
-module.exports = { log, logError };
+function logTransition(sessionId, from, to, extra = {}) {
+  log('state_transition', { session_id: sessionId, from, to, ...extra });
+}
+
+function logTiming(sessionId, stage, ms, extra = {}) {
+  log('timing', { session_id: sessionId, stage, ms, ...extra });
+}
+
+function summarizeIceServers(iceServers = []) {
+  return {
+    count: iceServers.length,
+    urls: iceServers.map((s) => s.urls),
+    has_turn: iceServers.some((s) => String(s.urls || '').startsWith('turn:')),
+    turn_username: iceServers.find((s) => String(s.urls || '').startsWith('turn:'))?.username || null,
+    turn_credential_set: iceServers.some(
+      (s) => String(s.urls || '').startsWith('turn:') && Boolean(s.credential)
+    ),
+  };
+}
+
+function summarizeSdp(sdp) {
+  if (!sdp || typeof sdp !== 'object') return null;
+  const text = String(sdp.sdp || '');
+  return {
+    type: sdp.type || null,
+    sdp_length: text.length,
+    embedded_candidates: (text.match(/^a=candidate:/gm) || []).length,
+    preview: text.slice(0, 100).replace(/\r?\n/g, '\\n'),
+  };
+}
+
+function summarizeIceCandidate(candidate) {
+  if (!candidate) return null;
+  const text = typeof candidate === 'string' ? candidate : candidate.candidate;
+  if (!text) return null;
+  const typ = text.match(/ typ (\w+)/)?.[1] || 'unknown';
+  return {
+    typ,
+    is_relay: typ === 'relay',
+    is_srflx: typ === 'srflx',
+    is_host: typ === 'host',
+    sdpMid: candidate.sdpMid ?? null,
+    sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+    preview: String(text).slice(0, 120),
+  };
+}
+
+function candidateKey(candidate) {
+  const text = typeof candidate === 'string' ? candidate : candidate.candidate;
+  const mid = candidate.sdpMid ?? '';
+  const idx = candidate.sdpMLineIndex ?? '';
+  return `${text}|${mid}|${idx}`;
+}
+
+module.exports = {
+  log,
+  logError,
+  logTransition,
+  logTiming,
+  summarizeIceServers,
+  summarizeSdp,
+  summarizeIceCandidate,
+  candidateKey,
+};
