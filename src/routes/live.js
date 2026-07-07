@@ -499,7 +499,7 @@ router.post('/ice', authMiddleware, (req, res) => {
       ice_candidate_counts: stats,
     });
   } catch (err) {
-    logError('ice_post_failed', err, { user_id: req.user.id });
+    logError('ice_post_failed', err, { user_id: req.user.id, session_id: req.body?.session_id });
     res.status(500).json({ error: err.message });
   }
 });

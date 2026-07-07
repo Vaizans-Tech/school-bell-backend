@@ -296,6 +296,7 @@ function flushPendingRetries(session) {
 }
 
 function pushIceCandidate(session, role, candidate) {
+  const sessionId = session.id;
   const normalized = normalizeRole(role);
   const key = candidateKey(candidate);
   const keys = normalized === 'controller' ? session.controllerCandidateKeys : session.playerCandidateKeys;
@@ -375,6 +376,18 @@ function setAnswer(sessionId, userId, answer, playerDeviceId = null) {
       status: 409,
       failureReason: FAILURE_REASON.SIGNALING_LOST,
     };
+  }
+
+  // Ignore duplicate/late answer if session already past answer stage
+  const pastAnswer = [
+    SESSION_STATUS.ANSWER_RECEIVED,
+    SESSION_STATUS.ICE_CHECKING,
+    SESSION_STATUS.CONNECTED,
+    SESSION_STATUS.STREAMING,
+  ];
+  if (pastAnswer.includes(session.status) && session.answer) {
+    log('answer_ignored_duplicate', { session_id: sessionId, user_id: userId, status: session.status });
+    return { ok: true, session, duplicate: true };
   }
 
   const start = Date.now();
