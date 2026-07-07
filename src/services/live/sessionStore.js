@@ -472,6 +472,7 @@ function recordClientEvent(sessionId, userId, role, event, details = {}) {
       return { ok: true, session, ended: true };
     case 'peer_connected':
       diag.peer_connected_at = now;
+      if (!session.connectedAt) session.connectedAt = now;
       if (session.status !== SESSION_STATUS.STREAMING) {
         transitionStatus(session, SESSION_STATUS.CONNECTED);
       }
@@ -637,7 +638,10 @@ function checkTimeouts() {
       continue;
     }
 
-    if (!session.connectedAt && age > CONNECTION_TIMEOUT_MS) {
+    if (!session.connectedAt && age > CONNECTION_TIMEOUT_MS
+      && session.status !== SESSION_STATUS.STREAMING
+      && session.status !== SESSION_STATUS.CONNECTED
+      && session.status !== SESSION_STATUS.ICE_CHECKING) {
       failSession(session, FAILURE_REASON.CONNECTION_TIMEOUT);
       continue;
     }
