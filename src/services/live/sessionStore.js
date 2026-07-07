@@ -37,6 +37,7 @@ const {
   CLIENT_EVENTS,
 } = require('../../lib/liveConstants');
 const monitoring = require('./monitoring');
+const timeline = require('./sessionTimeline');
 
 /** @type {Map<string, object>} */
 const sessions = new Map();
@@ -81,12 +82,21 @@ function transitionStatus(session, nextStatus, meta = {}) {
 
 function failSession(session, reason) {
   session.failureReason = reason;
+  const durationMs = Date.now() - session.createdAt;
+  timeline.recordTimeout(session.id, reason, {
+    session_duration_ms: durationMs,
+    status_at_fail: session.status,
+    controller_ice: session.controllerCandidates.length,
+    player_ice: session.playerCandidates.length,
+    pending_retries: session.pendingRetries.length,
+  });
+  timeline.recordSession(session.id, 'session_failed', { reason, duration_ms: durationMs });
   transitionStatus(session, SESSION_STATUS.ENDED, { reason });
   session.endedAt = Date.now();
   session.endReason = reason;
   activeByUser.delete(session.userId);
   monitoring.recordSessionEnded(session);
-  log('session_failed', { session_id: session.id, user_id: session.userId, reason });
+  log('session_failed', { session_id: session.id, user_id: session.userId, reason, duration_ms: durationMs });
   emitSessionEnded(session);
   cleanupSessionMemory(session);
 }
@@ -124,27 +134,11 @@ function publicSession(session, forRole) {
 }
 
 function publicDiagnostics(session) {
-  const d = session.diagnostics;
-  const duration = session.endedAt
-    ? session.endedAt - session.createdAt
-    : Date.now() - session.createdAt;
-  return {
-    session_id: session.id,
-    user_id: session.userId,
-    controller_device_id: session.controllerDeviceId,
-    player_device_id: session.playerDeviceId,
-    status: session.status,
-    failure_reason: session.failureReason || session.endReason || null,
-    ...d,
-    connection_duration_ms: duration,
-    controller_ice_count: session.controllerCandidates.length,
-    player_ice_count: session.playerCandidates.length,
-    pending_retries: session.pendingRetries.length,
-  };
+  return timeline.buildReport(session);
 }
 
 function createSession(userId, controllerDeviceId = null) {
-  endSessionsForUser(userId, FAILURE_REASON.REPLACED);
+  const replaced = endSessionsForUser(userId, FAILURE_REASON.REPLACED);
 
   const id = uuidv4();
   const now = Date.now();
@@ -177,6 +171,17 @@ function createSession(userId, controllerDeviceId = null) {
   activeByUser.set(userId, id);
   transitionStatus(session, SESSION_STATUS.PLAYER_WAITING);
   monitoring.recordSessionCreated();
+  timeline.recordSession(id, 'session_created', {
+    user_id: userId,
+    controller_device_id: controllerDeviceId,
+    replaced_session_id: replaced?.id || null,
+  });
+  if (replaced) {
+    timeline.recordRace(id, 'duplicate_session_replaced', {
+      previous_session_id: replaced.id,
+      previous_status: replaced.status,
+    });
+  }
   log('session_created', { session_id: id, user_id: userId, controller_device_id: controllerDeviceId });
   return session;
 }
@@ -200,6 +205,10 @@ function assertSessionAccess(session, userId) {
   if (!session) return { ok: false, error: 'Session not found', status: 404 };
   if (session.userId !== userId) {
     log('unauthorized_access', { session_id: session.id, user_id: userId });
+    timeline.recordAuth(session.id, 'auth_failed', {
+      user_id: userId,
+      reason: 'not_session_owner',
+    });
     return { ok: false, error: 'Not your session', status: 403, failureReason: FAILURE_REASON.AUTHENTICATION_FAILED };
   }
   if (session.status === SESSION_STATUS.ENDED) {
@@ -238,6 +247,11 @@ function deliverOrQueue(session, message, targetRole) {
   const sent = deliverSignaling(session, message, targetRole);
   if (sent === 0) {
     queueRetry(session, message, targetRole);
+    timeline.append(session.id, 'signaling', 'message_queued', {
+      type: message.type,
+      target: targetRole,
+      reason: targetRole === 'player' ? 'player_offline' : 'controller_offline',
+    });
     if (targetRole === 'player') {
       session.failureReason = FAILURE_REASON.PLAYER_OFFLINE;
     } else {
@@ -252,6 +266,7 @@ function flushPendingRetries(session) {
   const remaining = [];
   for (const item of session.pendingRetries) {
     if (item.attempts >= ICE_RETRY_MAX) {
+      timeline.recordIceDropped(session.id, item.targetRole === 'player' ? 'controller' : 'player', item.targetRole, 'retry_exhausted');
       log('retry_exhausted', {
         session_id: session.id,
         type: item.message.type,
@@ -264,6 +279,11 @@ function flushPendingRetries(session) {
       item.attempts += 1;
       remaining.push(item);
     } else {
+      timeline.append(session.id, 'signaling', 'retry_delivered', {
+        type: item.message.type,
+        target: item.targetRole,
+        attempt: item.attempts + 1,
+      });
       log('retry_delivered', {
         session_id: session.id,
         type: item.message.type,
@@ -282,10 +302,15 @@ function pushIceCandidate(session, role, candidate) {
   const list = normalized === 'controller' ? session.controllerCandidates : session.playerCandidates;
 
   if (keys.has(key)) {
+    timeline.recordIceDuplicate(sessionId, normalized, candidate);
     return { ok: true, session, role: normalized, duplicate: true };
   }
   keys.add(key);
   list.push({ ...candidate, at: Date.now() });
+  timeline.recordIceReceived(sessionId, normalized, candidate, {
+    total_controller: session.controllerCandidates.length,
+    total_player: session.playerCandidates.length,
+  });
 
   if (!session.diagnostics.ice_start_at
     && (session.status === SESSION_STATUS.ANSWER_RECEIVED
@@ -313,6 +338,10 @@ function setOffer(sessionId, userId, offer) {
     SESSION_STATUS.ICE_CHECKING,
   ];
   if (!allowed.includes(session.status)) {
+    timeline.recordRace(sessionId, 'offer_before_player_ready', {
+      current_status: session.status,
+      player_ready_at: session.playerReadyAt,
+    });
     return {
       ok: false,
       error: 'Player not ready — offer cannot be sent yet',
@@ -327,6 +356,8 @@ function setOffer(sessionId, userId, offer) {
   session.diagnostics.offer_created_at = session.offerSentAt;
   transitionStatus(session, SESSION_STATUS.OFFER_SENT);
   recordTiming(session, 'offer_stored', start);
+  timeline.recordSignaling(sessionId, 'offer_created', { user_id: userId });
+  timeline.recordSignaling(sessionId, 'offer_received', { user_id: userId, sdp_length: offer.sdp?.length });
   log('offer_received', { session_id: sessionId, user_id: userId });
   return { ok: true, session };
 }
@@ -337,6 +368,7 @@ function setAnswer(sessionId, userId, answer, playerDeviceId = null) {
   if (!access.ok) return access;
 
   if (!session.offer) {
+    timeline.recordRace(sessionId, 'answer_before_offer', { status: session.status });
     return {
       ok: false,
       error: 'Offer not ready yet',
@@ -352,6 +384,8 @@ function setAnswer(sessionId, userId, answer, playerDeviceId = null) {
   session.diagnostics.answer_created_at = session.answerReceivedAt;
   transitionStatus(session, SESSION_STATUS.ANSWER_RECEIVED);
   recordTiming(session, 'answer_stored', start);
+  timeline.recordSignaling(sessionId, 'answer_created', { user_id: userId, player_device_id: playerDeviceId });
+  timeline.recordSignaling(sessionId, 'answer_received', { user_id: userId, sdp_length: answer.sdp?.length });
   log('answer_received', { session_id: sessionId, user_id: userId });
   return { ok: true, session };
 }
@@ -362,6 +396,7 @@ function addIceCandidate(sessionId, userId, role, candidate) {
   if (!access.ok) return access;
 
   if (!session.offer) {
+    timeline.recordRace(sessionId, 'ice_before_remote_sdp', { role, status: session.status });
     return {
       ok: false,
       error: 'Remote SDP not ready — ICE buffered on client until offer/answer set',
@@ -389,6 +424,11 @@ function registerPlayer(sessionId, userId, playerDeviceId = null) {
 
   if (session.status === SESSION_STATUS.PLAYER_WAITING || session.status === SESSION_STATUS.CREATED) {
     transitionStatus(session, SESSION_STATUS.PLAYER_READY);
+    timeline.recordSession(sessionId, 'player_ready', {
+      user_id: userId,
+      player_device_id: playerDeviceId,
+      wait_ms: Date.now() - session.createdAt,
+    });
   }
 
   flushPendingRetries(session);
@@ -460,6 +500,7 @@ function markDelivered(session, type, startMs) {
   if (type === 'offer') session.diagnostics.offer_delivered_at = now;
   if (type === 'answer') session.diagnostics.answer_delivered_at = now;
   session.diagnostics.timings[`${type}_delivery`] = ms;
+  timeline.recordSignaling(session.id, `${type}_delivered`, { delivery_ms: ms });
   logTiming(session.id, `${type}_delivered`, ms);
 }
 
@@ -471,6 +512,7 @@ function resyncSignalingForPeer(userId, role) {
   if (!normalized) return null;
 
   log('signaling_resync', { session_id: session.id, user_id: userId, role: normalized });
+  timeline.append(session.id, 'signaling', 'reconnect_resync', { user_id: userId, role: normalized });
   flushPendingRetries(session);
 
   if (normalized === 'player') {
@@ -478,7 +520,7 @@ function resyncSignalingForPeer(userId, role) {
       registerPlayer(session.id, userId, session.playerDeviceId);
     }
     for (const c of session.controllerCandidates) {
-      deliverOrQueue(session, {
+      const msg = {
         type: 'live_ice',
         session_id: session.id,
         from_role: 'controller',
@@ -487,11 +529,13 @@ function resyncSignalingForPeer(userId, role) {
           sdpMid: c.sdpMid,
           sdpMLineIndex: c.sdpMLineIndex,
         },
-      }, 'player');
+      };
+      const sent = deliverOrQueue(session, msg, 'player');
+      recordIceForwarded(session.id, 'controller', 'player', c, sent, { resync: true });
     }
   } else {
     for (const c of session.playerCandidates) {
-      deliverOrQueue(session, {
+      const msg = {
         type: 'live_ice',
         session_id: session.id,
         from_role: 'player',
@@ -500,7 +544,9 @@ function resyncSignalingForPeer(userId, role) {
           sdpMid: c.sdpMid,
           sdpMLineIndex: c.sdpMLineIndex,
         },
-      }, 'controller');
+      };
+      const sent = deliverOrQueue(session, msg, 'controller');
+      recordIceForwarded(session.id, 'player', 'controller', c, sent, { resync: true });
     }
   }
 
@@ -530,10 +576,12 @@ function endSession(sessionId, userId, reason = FAILURE_REASON.ENDED) {
   transitionStatus(session, SESSION_STATUS.ENDED, { reason });
   session.endedAt = Date.now();
   session.endReason = reason;
+  const durationMs = session.endedAt - session.createdAt;
+  timeline.recordSession(sessionId, 'session_closed', { reason, duration_ms: durationMs, user_id: userId });
   activeByUser.delete(session.userId);
   monitoring.recordSessionEnded(session);
   cleanupSessionMemory(session);
-  log('session_ended', { session_id: sessionId, user_id: userId, reason });
+  log('session_ended', { session_id: sessionId, user_id: userId, reason, duration_ms: durationMs });
   emitSessionEnded(session);
   return { ok: true, session };
 }
@@ -546,6 +594,12 @@ function endSessionsForUser(userId, reason = FAILURE_REASON.REPLACED) {
     transitionStatus(session, SESSION_STATUS.ENDED, { reason });
     session.endedAt = Date.now();
     session.endReason = reason;
+    timeline.recordSession(id, 'session_closed', {
+      reason,
+      duration_ms: session.endedAt - session.createdAt,
+      user_id: userId,
+      replaced: reason === FAILURE_REASON.REPLACED,
+    });
     monitoring.recordSessionEnded(session);
     cleanupSessionMemory(session);
     log('session_ended', { session_id: id, user_id: userId, reason });
@@ -561,6 +615,14 @@ function checkTimeouts() {
     if (session.status === SESSION_STATUS.ENDED) continue;
 
     const age = now - session.createdAt;
+
+    if (!session.playerReadyAt
+      && (session.status === SESSION_STATUS.PLAYER_WAITING
+        || session.status === SESSION_STATUS.CREATED)
+      && age > OFFER_TIMEOUT_MS) {
+      failSession(session, FAILURE_REASON.PLAYER_OFFLINE);
+      continue;
+    }
 
     if (!session.connectedAt && age > CONNECTION_TIMEOUT_MS) {
       failSession(session, FAILURE_REASON.CONNECTION_TIMEOUT);
@@ -600,6 +662,11 @@ function cleanupExpiredSessions() {
   for (const [id, session] of sessions.entries()) {
     if (session.status === SESSION_STATUS.ENDED) {
       if (session.endedAt && now - session.endedAt > ENDED_RETENTION_MS) {
+        timeline.recordSession(id, 'session_expired', {
+          retention_ms: ENDED_RETENTION_MS,
+          ended_at: session.endedAt,
+        });
+        timeline.purge(id);
         sessions.delete(id);
       }
     }
@@ -614,6 +681,10 @@ function runMaintenance() {
       flushPendingRetries(session);
     }
   }
+}
+
+function recordIceForwarded(sessionId, fromRole, toRole, candidate, sent, extra = {}) {
+  timeline.recordIceForwarded(sessionId, fromRole, toRole, candidate, sent, extra);
 }
 
 setInterval(runMaintenance, CLEANUP_INTERVAL_MS);
@@ -639,5 +710,8 @@ module.exports = {
   deliverOrQueue,
   markDelivered,
   resyncSignalingForPeer,
+  recordIceForwarded,
   flushPendingRetries,
+  getTimeline: timeline.getTimeline,
+  getIceStats: timeline.getIceStats,
 };

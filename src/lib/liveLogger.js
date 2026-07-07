@@ -1,13 +1,15 @@
 const PREFIX = '[live]';
 
 function log(event, details = {}) {
-  const payload = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
+  const payload = Object.keys(details).length
+    ? ` ${JSON.stringify({ ts: new Date().toISOString(), ...details })}`
+    : ` ${JSON.stringify({ ts: new Date().toISOString() })}`;
   console.log(`${PREFIX} ${event}${payload}`);
 }
 
 function logError(event, err, details = {}) {
   const msg = err?.message || String(err);
-  console.error(`${PREFIX} ${event}: ${msg}`, details);
+  console.error(`${PREFIX} ${event}: ${msg}`, { ts: new Date().toISOString(), ...details });
 }
 
 function logTransition(sessionId, from, to, extra = {}) {
@@ -16,6 +18,10 @@ function logTransition(sessionId, from, to, extra = {}) {
 
 function logTiming(sessionId, stage, ms, extra = {}) {
   log('timing', { session_id: sessionId, stage, ms, ...extra });
+}
+
+function logAuth(role, success, details = {}) {
+  log(success ? `${role}_auth_success` : `${role}_auth_failed`, details);
 }
 
 function summarizeIceServers(iceServers = []) {
@@ -27,6 +33,8 @@ function summarizeIceServers(iceServers = []) {
     turn_credential_set: iceServers.some(
       (s) => String(s.urls || '').startsWith('turn:') && Boolean(s.credential)
     ),
+    turn_credential_length: iceServers.find((s) => String(s.urls || '').startsWith('turn:'))
+      ?.credential?.length || 0,
   };
 }
 
@@ -69,6 +77,7 @@ module.exports = {
   logError,
   logTransition,
   logTiming,
+  logAuth,
   summarizeIceServers,
   summarizeSdp,
   summarizeIceCandidate,
